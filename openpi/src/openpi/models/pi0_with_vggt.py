@@ -14,101 +14,103 @@ from openpi.shared import array_typing as at
 logger = logging.getLogger(__name__)
 
 
+# openpi/models/pi0_with_vggt.py
+
 class Pi0WithVGGT(Pi0):
-    """π₀ enhanced with VGGT scene understanding via LoRA adapters."""
-    
     def __init__(self, config: pi0_config.Pi0WithVGGTConfig, rngs: nnx.Rngs):
-        # Initialize base Pi0 model first
         super().__init__(config, rngs)
         
-        # Store VGGT config
         self.vggt_config = config
+        paligemma_config = self.PaliGemma.llm.configs[0]
+        self.embed_dim = paligemma_config.width
         
-        if not config.use_vggt_features:
-            logger.info("VGGT features disabled")
-            return
-        
-        # Get embedding dimension - use config directly instead of inspecting model
-        # The PaliGemma hidden size is known from the config
-        if config.paligemma_variant.startswith("gemma_2b"):
-            self.embed_dim = 2048
-        elif config.paligemma_variant.startswith("gemma_7b"):
-            self.embed_dim = 3072
-        else:
-            # Default for most PaliGemma variants
-            self.embed_dim = 2048
-        
-        # LoRA adapter: VGGT features → PaliGemma space
-        self.vggt_lora_down = nnx.Linear(
-            config.vggt_feature_dim,
-            config.vggt_lora_rank,
-            rngs=rngs,
-            use_bias=False,
-        )
-        self.vggt_lora_up = nnx.Linear(
-            config.vggt_lora_rank,
-            self.embed_dim,
-            rngs=rngs,
-            use_bias=False,
-        )
-        
-        # Optional: Learned gating mechanism
-        if config.use_vggt_gating:
-            self.vggt_gate = nnx.Sequential(
-                nnx.Linear(config.vggt_feature_dim + self.embed_dim, 128, rngs=rngs),
-                lambda x: nnx.swish(x),
-                nnx.Linear(128, 1, rngs=rngs),
+        if config.use_vggt_features:
+            # Parse VGGT feature dimensions
+            # Features are: [scene_tokens (2048) | pose (9) | depth (2) | points (6)]
+            self.scene_token_dim = 2048
+            self.aux_feature_dim = 9 + 2 + 6  # 17 dims
+            
+            # Option 1: Compress scene tokens first (RECOMMENDED)
+            self.scene_compressor = nnx.Linear(
+                self.scene_token_dim,
+                config.vggt_compressed_dim,  # e.g., 256
+                rngs=rngs,
+                use_bias=True,
             )
-        
-        logger.info(f"Pi0WithVGGT initialized:")
-        logger.info(f"  VGGT dim: {config.vggt_feature_dim}")
-        logger.info(f"  PaliGemma dim: {self.embed_dim}")
-        logger.info(f"  LoRA rank: {config.vggt_lora_rank}")
-        logger.info(f"  Gating: {config.use_vggt_gating}")
+            
+            # Then LoRA on compressed features + auxiliary features
+            total_compressed_dim = config.vggt_compressed_dim + self.aux_feature_dim
+            
+            self.vggt_lora_down = nnx.Linear(
+                total_compressed_dim,
+                config.vggt_lora_rank,
+                rngs=rngs,
+                use_bias=False,
+            )
+            self.vggt_lora_up = nnx.Linear(
+                config.vggt_lora_rank,
+                self.embed_dim,
+                rngs=rngs,
+                use_bias=False,
+            )
+            
+            if config.use_vggt_gating:
+                self.vggt_gate = nnx.Sequential(
+                    nnx.Linear(total_compressed_dim + self.embed_dim, 128, rngs=rngs),
+                    lambda x: nnx.swish(x),
+                    nnx.Linear(128, 1, rngs=rngs),
+                )
+            
+            logger.info(f"Pi0WithVGGT initialized:")
+            logger.info(f"  Scene tokens: {self.scene_token_dim} → {config.vggt_compressed_dim}")
+            logger.info(f"  Auxiliary features: {self.aux_feature_dim} (kept as-is)")
+            logger.info(f"  Total compressed: {total_compressed_dim}")
+            logger.info(f"  LoRA rank: {config.vggt_lora_rank}")
     
-    @at.typecheck
     def fuse_vggt_features(
         self,
         tokens: at.Float[at.Array, "b s emb"],
-        vggt_features: at.Float[at.Array, "b vggt_dim"],
+        vggt_features: at.Float[at.Array, "b 2065"],
     ) -> at.Float[at.Array, "b s emb"]:
-        """
-        Fuse VGGT scene features with π₀ tokens using LoRA.
+        """Fuse VGGT scene features with π₀ tokens using LoRA."""
         
-        Args:
-            tokens: π₀ prefix tokens [batch, seq_len, embed_dim]
-            vggt_features: VGGT scene features [batch, vggt_dim]
+        if not hasattr(self, '_logged_vggt'):
+        logger.info(f"VGGT fusion active!")
+        logger.info(f"  Input tokens shape: {tokens.shape}")
+        logger.info(f"  VGGT features shape: {vggt_features.shape}")
+        logger.info(f"  Scene tokens: {vggt_features[:, :2048].mean():.4f}")
+        logger.info(f"  Aux features: {vggt_features[:, 2048:].mean():.4f}")
+        self._logged_vggt = True
         
-        Returns:
-            Fused tokens [batch, seq_len, embed_dim]
-        """
-        # LoRA low-rank adaptation
-        vggt_down = self.vggt_lora_down(vggt_features)  # [B, rank]
-        vggt_adapted = self.vggt_lora_up(vggt_down)     # [B, embed_dim]
+        # Split VGGT features
+        scene_tokens = vggt_features[:, :self.scene_token_dim]  # [B, 2048]
+        aux_features = vggt_features[:, self.scene_token_dim:]  # [B, 17]
+        
+        # Compress scene tokens
+        scene_compressed = self.scene_compressor(scene_tokens)  # [B, 256]
+        
+        # Concatenate with auxiliary features
+        vggt_compressed = jnp.concatenate([scene_compressed, aux_features], axis=-1)  # [B, 273]
+        
+        # LoRA fusion
+        vggt_down = self.vggt_lora_down(vggt_compressed)  # [B, rank]
+        vggt_adapted = self.vggt_lora_up(vggt_down)  # [B, embed_dim]
         
         # Broadcast to sequence length
-        vggt_adapted = vggt_adapted[:, None, :]  # [B, 1, embed_dim]
-        vggt_adapted = jnp.broadcast_to(
-            vggt_adapted,
-            tokens.shape
-        )  # [B, S, embed_dim]
+        vggt_adapted = vggt_adapted[:, None, :]
+        vggt_adapted = jnp.broadcast_to(vggt_adapted, tokens.shape)
         
         if self.vggt_config.use_vggt_gating:
-            # Learned gating: decide how much VGGT to use per token
             gate_input = jnp.concatenate([
                 tokens,
                 jnp.broadcast_to(
-                    vggt_features[:, None, :],
-                    (*tokens.shape[:2], self.vggt_config.vggt_feature_dim)
+                    vggt_compressed[:, None, :],
+                    (*tokens.shape[:2], vggt_compressed.shape[-1])
                 )
-            ], axis=-1)  # [B, S, embed_dim + vggt_dim]
-            
-            gate = nnx.sigmoid(self.vggt_gate(gate_input))  # [B, S, 1]
-            
-            # Gated residual connection
+            ], axis=-1)
+            gate = nnx.sigmoid(self.vggt_gate(gate_input))
             fused = tokens + gate * vggt_adapted
         else:
-            # Simple residual connection
             fused = tokens + vggt_adapted
         
         return fused

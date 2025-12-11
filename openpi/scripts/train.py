@@ -153,6 +153,8 @@ def train_step(
     train_rng = jax.random.fold_in(rng, state.step)
     observation, actions = batch
 
+    print(f"VGGT features shape: {observation.vggt_scene_features.shape if observation.vggt_scene_features is not None else 'None'}")
+
     # Filter out frozen params.
     diff_state = nnx.DiffState(0, config.trainable_filter)
     loss, grads = nnx.value_and_grad(loss_fn, argnums=diff_state)(model, train_rng, observation, actions)

@@ -465,6 +465,22 @@ class LeRobotLiberoVGGTDataConfig(DataConfigFactory):
     
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        # Repack - keep all keys the same (no remapping needed)
+        repack_transform = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "observation/image": "observation/image",
+                        "observation/wrist_image": "observation/wrist_image",
+                        "observation/state": "observation/state",
+                        "observation/vggt_scene_features": "observation/vggt_scene_features",  # ← FIXED
+                        "actions": "actions",
+                        "prompt": "prompt",
+                    }
+                )
+            ]
+        )
+        
         data_transforms = _transforms.Group(
             inputs=[libero_policy.LiberoInputs(model_type=model_config.model_type)],
             outputs=[libero_policy.LiberoOutputs()],
@@ -483,11 +499,11 @@ class LeRobotLiberoVGGTDataConfig(DataConfigFactory):
         
         return dataclasses.replace(
             base_config,
-            repo_id=None,  # Don't use HuggingFace
-            repack_transforms=_transforms.Group(),  # No repack needed
+            repo_id=None,
+            repack_transforms=repack_transform,
             data_transforms=data_transforms,
             model_transforms=model_transforms,
-            local_dataset_path=self.vggt_dataset_path,  # Use local HDF5
+            local_dataset_path=self.vggt_dataset_path,
         )
 
 
@@ -967,12 +983,13 @@ _CONFIGS = [
             action_expert_variant="gemma_300m_lora",
             use_vggt_features=True,
             vggt_feature_dim=2065,
+            vggt_compressed_dim=128,
             vggt_lora_rank=8,
             use_vggt_gating=False,
         ),
         
         data=LeRobotLiberoVGGTDataConfig(
-            repo_id="Lifelong-Robot-Learning/LIBERO",  # Standard LIBERO repo
+            repo_id="Lifelong-Robot-Learning/LIBERO",
             vggt_dataset_path="/home/stella/projects/vggt/libero/datasets_with_vggt/libero_spatial/",
             extra_delta_transform=True,
         ),

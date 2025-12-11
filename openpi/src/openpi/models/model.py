@@ -129,6 +129,7 @@ class Observation(Generic[ArrayT]):
             tokenized_prompt_mask=data.get("tokenized_prompt_mask"),
             token_ar_mask=data.get("token_ar_mask"),
             token_loss_mask=data.get("token_loss_mask"),
+            vggt_scene_features=data.get("vggt_scene_features"),  # ← ADD THIS LINE
         )
 
     def to_dict(self) -> at.PyTree[ArrayT]:
@@ -208,6 +209,7 @@ def preprocess_observation(
         tokenized_prompt_mask=observation.tokenized_prompt_mask,
         token_ar_mask=observation.token_ar_mask,
         token_loss_mask=observation.token_loss_mask,
+        vggt_scene_features=observation.vggt_scene_features,  # ← ADD THIS LINE
     )
 
 
