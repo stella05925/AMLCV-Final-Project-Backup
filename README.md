@@ -18,3 +18,6 @@ uv run openpi/scripts/train.py pi0_libero_low_mem_finetune --exp-name=baseline -
 ```bash
 uv run scripts/train.py pi0_libero_vggt --exp-name=pi0_vggt --num-train-steps=5000 --batch-size=2 --log-interval=100 --overwrite
 ```
+
+### Model Checkpoints
+https://huggingface.co/stellaaaa/Pi0_vggt_libero_spatial_5k/tree/main
