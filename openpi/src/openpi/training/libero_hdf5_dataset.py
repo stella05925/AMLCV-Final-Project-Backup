@@ -134,3 +134,36 @@ class LiberoHDF5Dataset:
             'episode_index': f"task_{episode['task_id']}/episode_{ep_idx}",
             'frame_index': frame_idx,
         }
+
+class LiberoHDF5DatasetNoVGGT(LiberoHDF5Dataset):
+    """LIBERO dataset loader WITHOUT VGGT features (for baseline)."""
+    
+    def _load_sample(self, episode: dict, frame_idx: int, ep_idx: int) -> dict[str, Any]:
+        """Load a single sample from HDF5 (no VGGT features)."""
+        with h5py.File(episode['file'], 'r') as f:
+            demo = f['data'][episode['demo_key']]
+            
+            # Load observation at frame_idx
+            obs_image = demo['obs']['agentview_rgb'][frame_idx]
+            obs_wrist = demo['obs']['eye_in_hand_rgb'][frame_idx]
+            obs_state = demo['obs']['joint_states'][frame_idx]
+            
+            # Load action sequence
+            end_idx = min(frame_idx + self.action_horizon, episode['num_frames'])
+            actions = demo['actions'][frame_idx:end_idx]
+            
+            # Pad if needed
+            if len(actions) < self.action_horizon:
+                padding = np.zeros((self.action_horizon - len(actions), actions.shape[1]))
+                actions = np.concatenate([actions, padding], axis=0)
+        
+        # Return with simple keys (no 'observation/' prefix)
+        return {
+            'image': obs_image,              # Changed from 'observation/image'
+            'wrist_image': obs_wrist,        # Changed from 'observation/wrist_image'
+            'state': obs_state,              # Changed from 'observation/state'
+            'actions': actions,
+            'prompt': episode['task_desc'],
+            'episode_index': f"task_{episode['task_id']}/episode_{ep_idx}",
+            'frame_index': frame_idx,
+        }

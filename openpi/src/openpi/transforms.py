@@ -460,6 +460,31 @@ def _assert_quantile_stats(norm_stats: at.PyTree[NormStats]) -> None:
                 f"quantile stats must be provided if use_quantile_norm is True. Key {k} is missing q01 or q99."
             )
 
+def lerobot_image_transforms():
+    """
+    Create standard image transforms for LeRobot datasets.
+    Returns None since image preprocessing is handled by ResizeImages transform.
+    """
+    return None
+
+
+def make_delta_timestamps(action_horizon: int, fps: float = 50.0) -> dict[str, list[float]]:
+    """
+    Create delta timestamps for LeRobot dataset action sequences.
+    
+    Args:
+        action_horizon: Number of action steps to predict
+        fps: Frames per second of the dataset (default: 50 for LIBERO)
+    
+    Returns:
+        Dictionary mapping action keys to timestamp offsets
+    """
+    timestamps = [t / fps for t in range(action_horizon)]
+    return {
+        "action": timestamps,
+        "actions": timestamps,
+    }
+
 # openpi/transforms.py - Update LoadVGGTFeatures
 
 class LoadVGGTFeatures(DataTransformFn):

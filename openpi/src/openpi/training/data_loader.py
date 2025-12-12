@@ -547,20 +547,31 @@ def create_libero_hdf5_dataset(
     action_horizon: int,
 ) -> Dataset:
     """Create dataset from local LIBERO HDF5 files."""
-    from openpi.training.libero_hdf5_dataset import LiberoHDF5Dataset
+    from openpi.training.libero_hdf5_dataset import (
+        LiberoHDF5Dataset,
+        LiberoHDF5DatasetNoVGGT
+    )
     
-    # Extract path from data config
-    # Assuming the vggt_dataset_path is passed through somehow
-    # For now, hardcode or pass it through data_config
-    
+    # Get dataset path from data_config
     dataset_path = getattr(data_config, 'local_dataset_path', None)
     if dataset_path is None:
         raise ValueError("local_dataset_path must be set in data_config for HDF5 loading")
     
-    return LiberoHDF5Dataset(
-        dataset_path=dataset_path,
-        action_horizon=action_horizon,
-    )
+    # Check if we should load VGGT features
+    load_vggt = getattr(data_config, 'load_vggt_features', False)
+    
+    if load_vggt:
+        dataset = LiberoHDF5Dataset(
+            dataset_path=dataset_path,  # Fixed: use dataset_path, not config.local_dataset_path
+            action_horizon=action_horizon,
+        )
+    else:
+        dataset = LiberoHDF5DatasetNoVGGT(
+            dataset_path=dataset_path,  # Fixed: use dataset_path, not config.local_dataset_path
+            action_horizon=action_horizon,
+        )
+    
+    return dataset
 
 
 def create_torch_dataset(
@@ -572,18 +583,14 @@ def create_torch_dataset(
     
     # Check if we should use local HDF5 files
     if hasattr(data_config, 'local_dataset_path') and data_config.local_dataset_path:
-        logging.info(f"Using local HDF5 dataset from {data_config.local_dataset_path}")
-        from openpi.training.libero_hdf5_dataset import LiberoHDF5Dataset
-        return LiberoHDF5Dataset(
-            dataset_path=data_config.local_dataset_path,
-            action_horizon=action_horizon,
-        )
+        # Use the proper function that checks load_vggt_features
+        return create_libero_hdf5_dataset(data_config, action_horizon)
     
     # Import LeRobot only when needed
     if data_config.repo_id is None:
         return FakeDataset(model_config, 100)
     else:
-        import lerobot.common.datasets.lerobot_dataset as lerobot_dataset  # Import here
+        import lerobot.common.datasets.lerobot_dataset as lerobot_dataset
         return lerobot_dataset.LeRobotDataset(
             repo_id=data_config.repo_id,
             split="train",
