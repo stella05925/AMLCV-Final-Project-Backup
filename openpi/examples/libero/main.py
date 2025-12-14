@@ -232,6 +232,8 @@ def eval_libero(args: Args) -> None:
 
             task_episodes += 1
             total_episodes += 1
+
+            # Save a replay video of the episode
             suffix = "success" if done else "failure"
             task_segment = task_description.replace(" ", "_")
             imageio.mimwrite(
@@ -239,10 +241,19 @@ def eval_libero(args: Args) -> None:
                 [np.asarray(x) for x in replay_images],
                 fps=10,
             )
+
+            # Log current results
             logging.info(f"Success: {done}")
+            logging.info(f"# episodes completed so far: {total_episodes}")
             logging.info(f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)")
 
+        # Log final results
+        logging.info(f"Current task success rate: {float(task_successes) / float(task_episodes)}")
+        logging.info(f"Current total success rate: {float(total_successes) / float(total_episodes)}")
+
     logging.info(f"Total success rate: {float(total_successes) / float(total_episodes)}")
+    logging.info(f"Total episodes: {total_episodes}")
+
 
 def _get_libero_env(task, resolution, seed):
     task_description = task.language
