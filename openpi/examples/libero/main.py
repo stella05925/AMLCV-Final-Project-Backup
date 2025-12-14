@@ -14,6 +14,10 @@ from openpi_client import websocket_client_policy as _websocket_client_policy
 import tqdm
 import tyro
 
+import torch
+import torch.nn.functional as F
+from vggt.models.vggt import VGGT
+
 LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
 LIBERO_ENV_RESOLUTION = 256  # resolution used to render training data
 
@@ -44,6 +48,64 @@ class Args:
 
     seed: int = 7  # Random Seed (for reproducibility)
 
+def preprocess_image_for_vggt(image_array, target_size=224):
+    """
+    Preprocesses a single image (H, W, 3) for the VGGT model.
+    """
+    # Normalize to [0, 1]
+    image = torch.from_numpy(image_array).float() / 255.0
+    
+    # Transpose to CHW: [H, W, 3] -> [3, H, W]
+    image = image.permute(2, 0, 1)
+    
+    # Add batch dim for interpolation: [1, 3, H, W]
+    image = image.unsqueeze(0)
+
+    # Resize to target_size (224)
+    if image.shape[2] != target_size or image.shape[3] != target_size:
+        image = F.interpolate(
+            image,
+            size=(target_size, target_size),
+            mode='bilinear',
+            align_corners=False,
+            antialias=True
+        )
+    # Remove batch dim: [3, H, W]
+    return image.squeeze(0)
+
+def pool_vggt_features(scene_tokens, pose_enc, depth_map, point_map):
+    """
+    Pools VGGT outputs into the single 2065-dim vector.
+    Structure: [Tokens_Mean(1024), Tokens_Std(1024), Pose(9), Depth(2), Points(6)]
+    Total: 2065 dimensions.
+    """
+    # 1. Scene Tokens: Mean AND Std (To get 2048 dims)
+    tokens_mean = scene_tokens.mean(dim=[1, 2])  # [B, 1024]
+    tokens_std = scene_tokens.std(dim=[1, 2])    # [B, 1024]
+    tokens_pooled = torch.cat([tokens_mean, tokens_std], dim=-1) # [B, 2048]
+    
+    # 2. Camera: Mean [B, 9]
+    pose_pooled = pose_enc.mean(dim=1)
+    
+    # 3. Depth: Mean + Std [B, 2]
+    depth_mean = depth_map.mean(dim=[1, 2, 3])
+    depth_std = depth_map.std(dim=[1, 2, 3])
+    depth_features = torch.cat([depth_mean, depth_std], dim=-1)
+    
+    # 4. Points: Mean + Std [B, 6]
+    point_mean = point_map.mean(dim=[1, 2, 3])
+    point_std = point_map.std(dim=[1, 2, 3])
+    point_features = torch.cat([point_mean, point_std], dim=-1)
+    
+    # Concatenate: 2048 + 9 + 2 + 6 = 2065
+    all_features = torch.cat([
+        tokens_pooled,
+        pose_pooled,
+        depth_features,
+        point_features,
+    ], dim=-1)
+    
+    return all_features.cpu().numpy()
 
 def eval_libero(args: Args) -> None:
     # Set random seed
@@ -69,6 +131,19 @@ def eval_libero(args: Args) -> None:
         max_steps = 400  # longest training demo has 373 steps
     else:
         raise ValueError(f"Unknown task suite: {args.task_suite_name}")
+
+    # --- ADD THIS BLOCK: Initialize VGGT ---
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    logging.info(f"Initializing VGGT model on {device}...")
+    
+    # Load model
+    vggt_model = VGGT.from_pretrained("facebook/VGGT-1B").to(device)
+    vggt_model.eval()
+    
+    # Use bfloat16 for speed (matching your precompute script)
+    dtype = torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
+    logging.info("VGGT Model Loaded.")
+    # ---------------------------------------
 
     client = _websocket_client_policy.WebsocketClientPolicy(args.host, args.port)
 
@@ -110,6 +185,9 @@ def eval_libero(args: Args) -> None:
                         t += 1
                         continue
 
+                    img_raw = np.ascontiguousarray(obs["agentview_image"][::-1, ::-1])
+                    wrist_raw = np.ascontiguousarray(obs["robot0_eye_in_hand_image"][::-1, ::-1])
+
                     # Get preprocessed image
                     # IMPORTANT: rotate 180 degrees to match train preprocessing
                     img = np.ascontiguousarray(obs["agentview_image"][::-1, ::-1])
@@ -124,17 +202,46 @@ def eval_libero(args: Args) -> None:
                     # Save preprocessed image for replay video
                     replay_images.append(img)
 
+                    # --- ADD THIS BLOCK: Compute VGGT Features ---
+                    # 1. Preprocess images
+                    # Note: We use the raw 'img' and 'wrist_img' (numpy arrays), not the resized ones used for the policy visual encoder
+                    # If your policy resize is 224, you can reuse, but VGGT specific preprocessing is safer
+                    img_tensor = preprocess_image_for_vggt(img_raw).to(device)
+                    wrist_tensor = preprocess_image_for_vggt(wrist_raw).to(device)
+
+                    # 2. Stack input: [Batch=1, Seq=2, Channels=3, H=224, W=224]
+                    # Sequence order: AgentView first, then Wrist (matching your precompute script)
+                    vggt_input = torch.stack([img_tensor, wrist_tensor], dim=0).unsqueeze(0)
+                    
+                    logging.info("Computing VGGT features...")
+
+                    # 3. Run Inference
+                    with torch.no_grad():
+                        with torch.cuda.amp.autocast(dtype=dtype):
+                            aggregated_tokens_list, ps_idx = vggt_model.aggregator(vggt_input)
+                            
+                            # Extract raw outputs
+                            scene_tokens = aggregated_tokens_list[-1]
+                            pose_enc = vggt_model.camera_head(aggregated_tokens_list)[-1]
+                            depth_map, _ = vggt_model.depth_head(aggregated_tokens_list, vggt_input, ps_idx)
+                            point_map, _ = vggt_model.point_head(aggregated_tokens_list, vggt_input, ps_idx)
+                            
+                            # Pool into single vector [1, 2065]
+                            features_array = pool_vggt_features(scene_tokens, pose_enc, depth_map, point_map)
+                    
+                    current_vggt_features = features_array[0] # Shape (2065,)
+                    logging.info("VGGT features computed, shape: " + str(current_vggt_features.shape))
+                    
+                    # ---------------------------------------------
+
                     if not action_plan:
                         # Finished executing previous action chunk -- compute new chunk
                         # Prepare observations dict
                         element = {
                             "observation/image": img,
                             "observation/wrist_image": wrist_img,
-                            "observation/state": np.concatenate(
-                                (
-                                    obs["robot0_joint_pos"],
-                                )
-                            ),
+                            "observation/state": obs["robot0_joint_pos"],
+                            "observation/vggt_scene_features": current_vggt_features,
                             "prompt": str(task_description),
                         }
 
@@ -146,6 +253,8 @@ def eval_libero(args: Args) -> None:
                         action_plan.extend(action_chunk[: args.replan_steps])
 
                     action = action_plan.popleft()
+
+                    logging.info("Before executing action")
 
                     # Execute action in environment
                     obs, reward, done, info = env.step(action.tolist())

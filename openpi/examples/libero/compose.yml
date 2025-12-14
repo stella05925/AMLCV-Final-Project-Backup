@@ -15,6 +15,7 @@ services:
     volumes:
       - $PWD:/app
       - $PWD/third_party/libero_plus:/app/third_party/libero
+      - /home/rita/AMLCV-Final-Project-Backup/vggt/vggt:/app/vggt
       - ../../data:/data
       - /tmp/.X11-unix:/tmp/.X11-unix:ro
     environment:
@@ -31,12 +32,13 @@ services:
 
   openpi_server:
     image: openpi_server
+    ports:
+      - "8001:8000"
     build:
       context: ../..
       dockerfile: scripts/docker/serve_policy.Dockerfile
     init: true
     tty: true
-    network_mode: host
     volumes:
       - $PWD:/app
       - ${OPENPI_DATA_HOME:-~/.cache/openpi}:/openpi_assets
@@ -44,12 +46,13 @@ services:
       - SERVER_ARGS
       - OPENPI_DATA_HOME=/openpi_assets
       - IS_DOCKER=true
+      - JAX_PLATFORM_NAME=cpu
 
     # Comment out this block if not running on a machine with GPUs.
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
