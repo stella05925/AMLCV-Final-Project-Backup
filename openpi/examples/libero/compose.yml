@@ -22,6 +22,7 @@ services:
       - CLIENT_ARGS
       - DISPLAY=$DISPLAY
       - MUJOCO_GL=${MUJOCO_GL:-egl}
+      - XLA_PYTHON_CLIENT_MEM_FRACTION=0.40
     deploy:
       resources:
         reservations:
@@ -46,13 +47,12 @@ services:
       - SERVER_ARGS
       - OPENPI_DATA_HOME=/openpi_assets
       - IS_DOCKER=true
-      - JAX_PLATFORM_NAME=cpu
 
     # Comment out this block if not running on a machine with GPUs.
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: 1
-    #           capabilities: [gpu]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
