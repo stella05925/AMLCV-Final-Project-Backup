@@ -22,8 +22,13 @@ RUN apt-get update && \
     libglib2.0-0 \
     libsm6 \
     libxrender1 \
-    libxext6
-
+    libxext6 \
+    # --- ADDED FOR LIBERO+ ---
+    libexpat1 \
+    libfontconfig1-dev \
+    libpython3-stdlib \
+    libmagickwand-dev
+    # -------------------------
 WORKDIR /app
 
 # Copy from the cache instead of linking since it's a mounted volume
@@ -37,12 +42,13 @@ ENV UV_PROJECT_ENVIRONMENT=/.venv
 # The rest of the project is mounted as a volume, so we don't need to rebuild on changes.
 # This strategy is best for development-style usage.
 COPY ./examples/libero/requirements.txt /tmp/requirements.txt
-COPY ./third_party/libero/requirements.txt /tmp/requirements-libero.txt
+COPY ./third_party/libero_plus/requirements.txt /tmp/requirements-libero.txt
+COPY ./third_party/libero_plus/extra_requirements.txt /tmp/extra_requirements.txt
 COPY ./packages/openpi-client/pyproject.toml /tmp/openpi-client/pyproject.toml
 
 # Install python dependencies.
 RUN uv venv --python 3.8 $UV_PROJECT_ENVIRONMENT
-RUN uv pip sync /tmp/requirements.txt /tmp/requirements-libero.txt /tmp/openpi-client/pyproject.toml --extra-index-url https://download.pytorch.org/whl/cu113 --index-strategy=unsafe-best-match
+RUN uv pip sync /tmp/requirements.txt /tmp/requirements-libero.txt /tmp/extra_requirements.txt /tmp/openpi-client/pyproject.toml --extra-index-url https://download.pytorch.org/whl/cu113 --index-strategy=unsafe-best-match
 ENV PYTHONPATH=/app:/app/packages/openpi-client/src:/app/third_party/libero
 
 # Create a default config file to avoid an input prompt from LIBERO's init script.

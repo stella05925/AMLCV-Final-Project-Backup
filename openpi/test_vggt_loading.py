@@ -9,7 +9,7 @@ sys.path.insert(0, 'src')
 from openpi.transforms import LoadVGGTFeatures
 
 # Create loader
-loader = LoadVGGTFeatures("/home/stella/projects/vggt/libero/datasets_with_vggt/libero_spatial")
+loader = LoadVGGT\Features("/home/stella/projects/vggt/libero/datasets_with_vggt/libero_spatial")
 
 # Test data
 test_data = {

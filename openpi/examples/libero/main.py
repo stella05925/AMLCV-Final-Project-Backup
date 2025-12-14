@@ -35,12 +35,12 @@ class Args:
         "libero_spatial"  # Task suite. Options: libero_spatial, libero_object, libero_goal, libero_10, libero_90
     )
     num_steps_wait: int = 10  # Number of steps to wait for objects to stabilize i n sim
-    num_trials_per_task: int = 50  # Number of rollouts per task
+    num_trials_per_task: int = 1  # Number of rollouts per task
 
     #################################################################################################################
     # Utils
     #################################################################################################################
-    video_out_path: str = "data/libero/videos"  # Path to save videos
+    video_out_path: str = "data/libero+/videos"  # Path to save videos
 
     seed: int = 7  # Random Seed (for reproducibility)
 
@@ -132,9 +132,7 @@ def eval_libero(args: Args) -> None:
                             "observation/wrist_image": wrist_img,
                             "observation/state": np.concatenate(
                                 (
-                                    obs["robot0_eef_pos"],
-                                    _quat2axisangle(obs["robot0_eef_quat"]),
-                                    obs["robot0_gripper_qpos"],
+                                    obs["robot0_joint_pos"],
                                 )
                             ),
                             "prompt": str(task_description),
@@ -190,7 +188,7 @@ def _get_libero_env(task, resolution, seed):
     """Initializes and returns the LIBERO environment, along with the task description."""
     task_description = task.language
     task_bddl_file = pathlib.Path(get_libero_path("bddl_files")) / task.problem_folder / task.bddl_file
-    env_args = {"bddl_file_name": task_bddl_file, "camera_heights": resolution, "camera_widths": resolution}
+    env_args = {"bddl_file_name": str(task_bddl_file), "camera_heights": resolution, "camera_widths": resolution}
     env = OffScreenRenderEnv(**env_args)
     env.seed(seed)  # IMPORTANT: seed seems to affect object positions even when using fixed initial state
     return env, task_description
