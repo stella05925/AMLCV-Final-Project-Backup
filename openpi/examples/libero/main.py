@@ -135,13 +135,16 @@ def eval_libero(args: Args) -> None:
     else: raise ValueError(f"Unknown task suite: {args.task_suite_name}")
 
     # --- SAFE VGGT LOADING (PyTorch 1.11 Compatible) ---
-    # Keep model on CPU to avoid GPU OOM - inference speed is not the bottleneck
-    device = "cpu"
-    dtype = torch.float32
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    
+    # FORCE float16 because BFloat16 crashes on PyTorch 1.11 upsampling
+    dtype = torch.float16 if torch.cuda.is_available() else torch.float32
 
-    logging.info(f"Loading VGGT to CPU...")
+    logging.info(f"Loading VGGT to CPU first...")
     vggt_model = VGGT.from_pretrained("facebook/VGGT-1B")
-    vggt_model = vggt_model.to(device=device, dtype=dtype)
+    
+    logging.info(f"Casting to {dtype} and moving to {device}...")
+    vggt_model = vggt_model.to(dtype=dtype, device=device)
     vggt_model.eval()
     logging.info("VGGT Model Loaded successfully.")
     # ---------------------------------------------------
@@ -149,12 +152,14 @@ def eval_libero(args: Args) -> None:
     client = _websocket_client_policy.WebsocketClientPolicy(args.host, args.port)
 
     total_episodes, total_successes = 0, 0
+    total_steps_from_success, total_rewards_sum, total_task_successes = 0, 0, 0
     for task_id in tqdm.tqdm(range(num_tasks_in_suite)):
         task = task_suite.get_task(task_id)
         initial_states = task_suite.get_task_init_states(task_id)
         env, task_description = _get_libero_env(task, LIBERO_ENV_RESOLUTION, args.seed)
 
         task_episodes, task_successes = 0, 0
+        steps_from_success, rewards_sum = 0, 0
         for episode_idx in tqdm.tqdm(range(args.num_trials_per_task)):
             logging.info(f"\nTask: {task_description}")
             env.reset()
@@ -167,16 +172,10 @@ def eval_libero(args: Args) -> None:
             while t < max_steps + args.num_steps_wait:
                 try:
                     if t < args.num_steps_wait:
-                        if t % 2 == 0:
-                            logging.info(f"[Warmup] Step {t}/{args.num_steps_wait}")
                         obs, reward, done, info = env.step(LIBERO_DUMMY_ACTION)
                         t += 1
                         continue
 
-                    if t == args.num_steps_wait:
-                        logging.info(f"Warmup complete. Starting task execution...")
-                    
-                    logging.info(f"[Execution] Step {t - args.num_steps_wait}/{max_steps}")
                     img_raw = np.ascontiguousarray(obs["agentview_image"][::-1, ::-1])
                     wrist_raw = np.ascontiguousarray(obs["robot0_eye_in_hand_image"][::-1, ::-1])
 
@@ -186,7 +185,6 @@ def eval_libero(args: Args) -> None:
 
                     # --- INFERENCE ON REPLAN ONLY ---
                     if not action_plan:
-                        logging.info("Running VGGT inference...")
                         # 1. Preprocess exactly like training
                         img_tensor = preprocess_image_for_vggt(img_raw).to(device)
                         wrist_tensor = preprocess_image_for_vggt(wrist_raw).to(device)
@@ -195,16 +193,16 @@ def eval_libero(args: Args) -> None:
                         
                         # 2. Run Inference
                         with torch.no_grad():
-                            aggregated_tokens_list, ps_idx = vggt_model.aggregator(vggt_input)
-                            
-                            scene_tokens = aggregated_tokens_list[-1]
-                            pose_enc = vggt_model.camera_head(aggregated_tokens_list)[-1]
-                            depth_map, _ = vggt_model.depth_head(aggregated_tokens_list, vggt_input, ps_idx)
-                            point_map, _ = vggt_model.point_head(aggregated_tokens_list, vggt_input, ps_idx)
-                            
-                            features_array = pool_vggt_features(scene_tokens, pose_enc, depth_map, point_map)
+                            with torch.cuda.amp.autocast(enabled=True, dtype=dtype):
+                                aggregated_tokens_list, ps_idx = vggt_model.aggregator(vggt_input)
+                                
+                                scene_tokens = aggregated_tokens_list[-1]
+                                pose_enc = vggt_model.camera_head(aggregated_tokens_list)[-1]
+                                depth_map, _ = vggt_model.depth_head(aggregated_tokens_list, vggt_input, ps_idx)
+                                point_map, _ = vggt_model.point_head(aggregated_tokens_list, vggt_input, ps_idx)
+                                
+                                features_array = pool_vggt_features(scene_tokens, pose_enc, depth_map, point_map)
                         
-                        logging.info("VGGT inference complete. Requesting policy...")
                         current_vggt_features = features_array[0]
 
                         element = {
@@ -215,19 +213,18 @@ def eval_libero(args: Args) -> None:
                             "prompt": str(task_description),
                         }
                         
-                        logging.info("Calling policy inference...")
                         action_chunk = client.infer(element)["actions"]
-                        logging.info(f"Policy returned {len(action_chunk)} actions")
                         assert len(action_chunk) >= args.replan_steps
                         action_plan.extend(action_chunk[: args.replan_steps])
-                        logging.info(f"Action plan updated with {args.replan_steps} actions")
                     # ---------------------------------
                     
                     action = action_plan.popleft()
                     obs, reward, done, info = env.step(action.tolist())
+                    rewards_sum += reward
                     if done:
                         task_successes += 1
                         total_successes += 1
+                        steps_from_success += t
                         break
                     t += 1
 
@@ -252,14 +249,22 @@ def eval_libero(args: Args) -> None:
             # Log current results
             logging.info(f"Success: {done}")
             logging.info(f"# episodes completed so far: {total_episodes}")
-            logging.info(f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)")
-
+            logging.info(f"# successes: {total_successes} ({total_successes / total_episodes * 100:.3f}%)")
+            logging.info(f"Average of rewards of given by libero: {rewards_sum/total_episodes:.4f}")
         # Log final results
         logging.info(f"Current task success rate: {float(task_successes) / float(task_episodes)}")
-        logging.info(f"Current total success rate: {float(total_successes) / float(total_episodes)}")
-
+        logging.info(f"Current total success rate: {float(task_successes) / float(total_episodes)}")
+        if task_successes > 0:
+                logging.info(f"Average steps to success (successful episodes only): {steps_from_success / task_successes}")
+        total_rewards_sum += rewards_sum
+        total_steps_from_success += steps_from_success
+        total_task_successes += task_successes
     logging.info(f"Total success rate: {float(total_successes) / float(total_episodes)}")
+    logging.info(f"Average of total rewards of given by libero: {total_rewards_sum/total_episodes:.4f}")
     logging.info(f"Total episodes: {total_episodes}")
+    logging.info(f"Current total success rate: {float(task_successes) / float(total_episodes)}")
+    if total_task_successes > 0:
+            logging.info(f"Average steps to success (successful episodes only): {total_steps_from_success / total_task_successes}")
 
 
 def _get_libero_env(task, resolution, seed):
