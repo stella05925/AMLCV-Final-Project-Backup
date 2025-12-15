@@ -54,7 +54,7 @@ LIBERO_ENV_RESOLUTION = 256
 
 @dataclasses.dataclass
 class Args:
-    host: str = "0.0.0.0"
+    host: str = "openpi_server"
     port: int = 8000
     resize_size: int = 224
     replan_steps: int = 5
@@ -135,16 +135,13 @@ def eval_libero(args: Args) -> None:
     else: raise ValueError(f"Unknown task suite: {args.task_suite_name}")
 
     # --- SAFE VGGT LOADING (PyTorch 1.11 Compatible) ---
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    
-    # FORCE float16 because BFloat16 crashes on PyTorch 1.11 upsampling
-    dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+    # Keep model on CPU to avoid GPU OOM - inference speed is not the bottleneck
+    device = "cpu"
+    dtype = torch.float32
 
-    logging.info(f"Loading VGGT to CPU first...")
+    logging.info(f"Loading VGGT to CPU...")
     vggt_model = VGGT.from_pretrained("facebook/VGGT-1B")
-    
-    logging.info(f"Casting to {dtype} and moving to {device}...")
-    vggt_model = vggt_model.to(dtype=dtype, device=device)
+    vggt_model = vggt_model.to(device=device, dtype=dtype)
     vggt_model.eval()
     logging.info("VGGT Model Loaded successfully.")
     # ---------------------------------------------------
@@ -170,10 +167,16 @@ def eval_libero(args: Args) -> None:
             while t < max_steps + args.num_steps_wait:
                 try:
                     if t < args.num_steps_wait:
+                        if t % 2 == 0:
+                            logging.info(f"[Warmup] Step {t}/{args.num_steps_wait}")
                         obs, reward, done, info = env.step(LIBERO_DUMMY_ACTION)
                         t += 1
                         continue
 
+                    if t == args.num_steps_wait:
+                        logging.info(f"Warmup complete. Starting task execution...")
+                    
+                    logging.info(f"[Execution] Step {t - args.num_steps_wait}/{max_steps}")
                     img_raw = np.ascontiguousarray(obs["agentview_image"][::-1, ::-1])
                     wrist_raw = np.ascontiguousarray(obs["robot0_eye_in_hand_image"][::-1, ::-1])
 
@@ -183,6 +186,7 @@ def eval_libero(args: Args) -> None:
 
                     # --- INFERENCE ON REPLAN ONLY ---
                     if not action_plan:
+                        logging.info("Running VGGT inference...")
                         # 1. Preprocess exactly like training
                         img_tensor = preprocess_image_for_vggt(img_raw).to(device)
                         wrist_tensor = preprocess_image_for_vggt(wrist_raw).to(device)
@@ -191,16 +195,16 @@ def eval_libero(args: Args) -> None:
                         
                         # 2. Run Inference
                         with torch.no_grad():
-                            with torch.cuda.amp.autocast(enabled=True, dtype=dtype):
-                                aggregated_tokens_list, ps_idx = vggt_model.aggregator(vggt_input)
-                                
-                                scene_tokens = aggregated_tokens_list[-1]
-                                pose_enc = vggt_model.camera_head(aggregated_tokens_list)[-1]
-                                depth_map, _ = vggt_model.depth_head(aggregated_tokens_list, vggt_input, ps_idx)
-                                point_map, _ = vggt_model.point_head(aggregated_tokens_list, vggt_input, ps_idx)
-                                
-                                features_array = pool_vggt_features(scene_tokens, pose_enc, depth_map, point_map)
+                            aggregated_tokens_list, ps_idx = vggt_model.aggregator(vggt_input)
+                            
+                            scene_tokens = aggregated_tokens_list[-1]
+                            pose_enc = vggt_model.camera_head(aggregated_tokens_list)[-1]
+                            depth_map, _ = vggt_model.depth_head(aggregated_tokens_list, vggt_input, ps_idx)
+                            point_map, _ = vggt_model.point_head(aggregated_tokens_list, vggt_input, ps_idx)
+                            
+                            features_array = pool_vggt_features(scene_tokens, pose_enc, depth_map, point_map)
                         
+                        logging.info("VGGT inference complete. Requesting policy...")
                         current_vggt_features = features_array[0]
 
                         element = {
@@ -211,9 +215,12 @@ def eval_libero(args: Args) -> None:
                             "prompt": str(task_description),
                         }
                         
+                        logging.info("Calling policy inference...")
                         action_chunk = client.infer(element)["actions"]
+                        logging.info(f"Policy returned {len(action_chunk)} actions")
                         assert len(action_chunk) >= args.replan_steps
                         action_plan.extend(action_chunk[: args.replan_steps])
+                        logging.info(f"Action plan updated with {args.replan_steps} actions")
                     # ---------------------------------
                     
                     action = action_plan.popleft()

@@ -10,18 +10,17 @@ services:
       dockerfile: examples/libero/Dockerfile
     init: true
     tty: true
-    network_mode: host
     privileged: true
     volumes:
       - $PWD:/app
-      - $PWD/third_party/libero_plus:/app/third_party/libero
-      - /home/rita/AMLCV-Final-Project-Backup/vggt/vggt:/app/vggt
+      - $PWD/third_party/libero:/app/third_party/libero
+      - /home/rafal.ciolek12/AMLCV-Final-Project-Backup/vggt/vggt:/app/vggt
       - ../../data:/data
       - /tmp/.X11-unix:/tmp/.X11-unix:ro
     environment:
       - CLIENT_ARGS
       - DISPLAY=$DISPLAY
-      - MUJOCO_GL=${MUJOCO_GL:-egl}
+      - MUJOCO_GL=osmesa
       - XLA_PYTHON_CLIENT_MEM_FRACTION=0.40
     deploy:
       resources:
