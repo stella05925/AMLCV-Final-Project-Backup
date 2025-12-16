@@ -3,6 +3,7 @@ import dataclasses
 import logging
 import math
 import pathlib
+from typing import Optional
 
 import imageio
 from libero.libero import benchmark
@@ -13,6 +14,14 @@ from openpi_client import image_tools
 from openpi_client import websocket_client_policy as _websocket_client_policy
 import tqdm
 import tyro
+
+# Import VGGT inference module
+try:
+    from vggt_inference import VGGTInference
+    VGGT_AVAILABLE = True
+except ImportError:
+    logging.warning("VGGT inference module not available. Install vggt package to enable VGGT features.")
+    VGGT_AVAILABLE = False
 
 LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
 LIBERO_ENV_RESOLUTION = 256  # resolution used to render training data
@@ -38,6 +47,14 @@ class Args:
     num_trials_per_task: int = 50  # Number of rollouts per task
 
     #################################################################################################################
+    # VGGT parameters (for on-the-fly feature computation)
+    #################################################################################################################
+    use_vggt: bool = False  # Enable on-the-fly VGGT feature computation
+    vggt_model_name: str = "facebook/VGGT-1B"  # HuggingFace model name for VGGT
+    vggt_target_size: int = 224  # Image size for VGGT (must be divisible by 14)
+    vggt_device: str = "cuda"  # Device for VGGT inference ('cuda' or 'cpu')
+
+    #################################################################################################################
     # Utils
     #################################################################################################################
     video_out_path: str = "data/libero/videos"  # Path to save videos
@@ -56,6 +73,22 @@ def eval_libero(args: Args) -> None:
     logging.info(f"Task suite: {args.task_suite_name}")
 
     pathlib.Path(args.video_out_path).mkdir(parents=True, exist_ok=True)
+
+    # Initialize VGGT encoder if enabled
+    vggt_encoder: Optional[VGGTInference] = None
+    if args.use_vggt:
+        if not VGGT_AVAILABLE:
+            raise RuntimeError(
+                "VGGT inference requested but VGGT module not available. "
+                "Please install the vggt package."
+            )
+        logging.info(f"Initializing VGGT encoder ({args.vggt_model_name})...")
+        vggt_encoder = VGGTInference(
+            model_name=args.vggt_model_name,
+            device=args.vggt_device,
+            target_size=args.vggt_target_size,
+        )
+        logging.info("✓ VGGT encoder ready for on-the-fly feature computation")
 
     if args.task_suite_name == "libero_spatial":
         max_steps = 220  # longest training demo has 193 steps
@@ -126,6 +159,24 @@ def eval_libero(args: Args) -> None:
 
                     if not action_plan:
                         # Finished executing previous action chunk -- compute new chunk
+
+                        # Compute VGGT features on-the-fly if enabled
+                        vggt_features = None
+                        if vggt_encoder is not None:
+                            # Use original (unrotated) images for VGGT
+                            # VGGT expects [H, W, 3] uint8 images
+                            agentview_original = obs["agentview_image"]
+                            wrist_original = obs["robot0_eye_in_hand_image"]
+
+                            vggt_features = vggt_encoder.encode_single_observation(
+                                agentview_image=agentview_original,
+                                wrist_image=wrist_original,
+                            )
+
+                            # Verify shape
+                            assert vggt_features.shape == (2065,), \
+                                f"Expected VGGT features shape (2065,), got {vggt_features.shape}"
+
                         # Prepare observations dict
                         element = {
                             "observation/image": img,
@@ -139,6 +190,10 @@ def eval_libero(args: Args) -> None:
                             ),
                             "prompt": str(task_description),
                         }
+
+                        # Add VGGT features if available
+                        if vggt_features is not None:
+                            element["observation/vggt_scene_features"] = vggt_features
 
                         # Query model to get action
                         action_chunk = client.infer(element)["actions"]

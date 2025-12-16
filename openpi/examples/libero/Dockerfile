@@ -43,7 +43,17 @@ COPY ./packages/openpi-client/pyproject.toml /tmp/openpi-client/pyproject.toml
 # Install python dependencies.
 RUN uv venv --python 3.8 $UV_PROJECT_ENVIRONMENT
 RUN uv pip sync /tmp/requirements.txt /tmp/requirements-libero.txt /tmp/openpi-client/pyproject.toml --extra-index-url https://download.pytorch.org/whl/cu113 --index-strategy=unsafe-best-match
-ENV PYTHONPATH=/app:/app/packages/openpi-client/src:/app/third_party/libero
+
+# Optional: Install VGGT package for on-the-fly feature computation
+# NOTE: VGGT requires Python 3.10+, but this container uses Python 3.8 for LIBERO compatibility.
+# To enable VGGT features, you need to:
+#   1. Build a separate container with Python 3.10+
+#   2. Or use precomputed VGGT features (recommended)
+# To enable, uncomment the following lines:
+# COPY ./vggt /tmp/vggt
+# RUN uv pip install -e /tmp/vggt
+
+ENV PYTHONPATH=/app:/app/packages/openpi-client/src:/app/third_party/libero:/app/vggt
 
 # Create a default config file to avoid an input prompt from LIBERO's init script.
 # https://github.com/Lifelong-Robot-Learning/LIBERO/blob/master/libero/libero/__init__.py
