@@ -14,7 +14,7 @@ services:
     volumes:
       - $PWD:/app
       - $PWD/third_party/libero:/app/third_party/libero
-      - /home/rafal.ciolek12/AMLCV-Final-Project-Backup/vggt/vggt:/app/vggt
+      - $PWD/../vggt/vggt:/app/vggt
       - ../../data:/data
       - /tmp/.X11-unix:/tmp/.X11-unix:ro
     environment:
