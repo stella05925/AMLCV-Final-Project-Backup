@@ -14,211 +14,144 @@ from openpi_client import websocket_client_policy as _websocket_client_policy
 import tqdm
 import tyro
 
-import torch
-import torch.nn.functional as F
-
-# --- FIX: Monkeypatch scaled_dot_product_attention for PyTorch 1.11 ---
-if not hasattr(F, 'scaled_dot_product_attention'):
-    def manual_sdpa(query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False, scale=None):
-        L, S = query.size(-2), key.size(-2)
-        scale_factor = 1 / math.sqrt(query.size(-1)) if scale is None else scale
-        attn_bias = torch.zeros(L, S, dtype=query.dtype, device=query.device)
-        
-        if is_causal:
-            assert attn_mask is None
-            temp_mask = torch.ones(L, S, dtype=torch.bool, device=query.device).tril(diagonal=0)
-            attn_bias.masked_fill_(temp_mask.logical_not(), float("-inf"))
-            if attn_mask is not None:
-                attn_bias.masked_fill_(attn_mask.logical_not(), float("-inf"))
-        
-        if attn_mask is not None:
-            if attn_mask.dtype == torch.bool:
-                attn_bias.masked_fill_(attn_mask.logical_not(), float("-inf"))
-            else:
-                attn_bias += attn_mask
-
-        attn_weight = query @ key.transpose(-2, -1) * scale_factor
-        attn_weight += attn_bias
-        attn_weight = torch.softmax(attn_weight, dim=-1)
-        attn_weight = torch.dropout(attn_weight, dropout_p, train=True)
-        return attn_weight @ value
-
-    torch.nn.functional.scaled_dot_product_attention = manual_sdpa
-    print("PATCH APPLIED: Added manual scaled_dot_product_attention for PyTorch 1.x")
-# ----------------------------------------------------------------------
-
-from vggt.models.vggt import VGGT
-
 LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
-LIBERO_ENV_RESOLUTION = 256
+LIBERO_ENV_RESOLUTION = 256  # resolution used to render training data
+
 
 @dataclasses.dataclass
 class Args:
+    #################################################################################################################
+    # Model server parameters
+    #################################################################################################################
     host: str = "openpi_server"
     port: int = 8000
     resize_size: int = 224
     replan_steps: int = 5
-    task_suite_name: str = "libero_spatial"
-    num_steps_wait: int = 10
-    num_trials_per_task: int = 1
-    video_out_path: str = "data/libero+/videos"
-    seed: int = 7
 
-# --- MATCHING TRAINING PREPROCESSING ---
-def preprocess_image_for_vggt(image_array, target_size=224):
-    """
-    Exact match to training preprocessing.
-    """
-    # Normalize to [0, 1]
-    image = torch.from_numpy(image_array).float() / 255.0
-    
-    # Transpose to CHW format [H, W, 3] -> [3, H, W]
-    image = image.permute(2, 0, 1)
-    
-    # Resize to target_size using bilinear interpolation
-    if image.shape[1] != target_size or image.shape[2] != target_size:
-        image = F.interpolate(
-            image.unsqueeze(0),
-            size=(target_size, target_size),
-            mode='bilinear',
-            align_corners=False,
-            antialias=True
-        ).squeeze(0)
-    
-    return image
+    #################################################################################################################
+    # LIBERO environment-specific parameters
+    #################################################################################################################
+    task_suite_name: str = (
+        "libero_spatial"  # Task suite. Options: libero_spatial, libero_object, libero_goal, libero_10, libero_90
+    )
+    num_steps_wait: int = 10  # Number of steps to wait for objects to stabilize i n sim
+    num_trials_per_task: int = 50  # Number of rollouts per task
 
-# --- MATCHING TRAINING POOLING (Output Dim: 1041) ---
-def pool_vggt_features(scene_tokens, pose_enc, depth_map, point_map):
-    """
-    Exact match to training pooling logic.
-    Returns vector of size 1041 (1024 + 9 + 2 + 6).
-    """
-    # 1. Pool scene tokens [B, 1024]
-    tokens_pooled = scene_tokens.mean(dim=[1, 2])
-    
-    # 2. Pool camera parameters [B, 9]
-    pose_pooled = pose_enc.mean(dim=1)
-    
-    # 3. Pool depth statistics [B, 2]
-    depth_mean = depth_map.mean(dim=[1, 2, 3])
-    depth_std = depth_map.std(dim=[1, 2, 3])
-    depth_features = torch.cat([depth_mean, depth_std], dim=-1)
-    
-    # 4. Pool point map statistics [B, 6]
-    point_mean = point_map.mean(dim=[1, 2, 3])
-    point_std = point_map.std(dim=[1, 2, 3])
-    point_features = torch.cat([point_mean, point_std], dim=-1)
-    
-    # Concatenate all features
-    all_features = torch.cat([
-        tokens_pooled,     # 1024
-        pose_pooled,       # 9
-        depth_features,    # 2
-        point_features,    # 6
-    ], dim=-1)             # Total: 1041
-    
-    return all_features.cpu().numpy()
+    #################################################################################################################
+    # Utils
+    #################################################################################################################
+    video_out_path: str = "data/libero/videos"  # Path to save videos
+
+    seed: int = 7  # Random Seed (for reproducibility)
+
 
 def eval_libero(args: Args) -> None:
+    # Set random seed
     np.random.seed(args.seed)
+
+    # Initialize LIBERO task suite
     benchmark_dict = benchmark.get_benchmark_dict()
     task_suite = benchmark_dict[args.task_suite_name]()
     num_tasks_in_suite = task_suite.n_tasks
     logging.info(f"Task suite: {args.task_suite_name}")
+
     pathlib.Path(args.video_out_path).mkdir(parents=True, exist_ok=True)
 
-    if args.task_suite_name == "libero_spatial": max_steps = 220
-    elif args.task_suite_name == "libero_object": max_steps = 280
-    elif args.task_suite_name == "libero_goal": max_steps = 300
-    elif args.task_suite_name == "libero_10": max_steps = 520
-    elif args.task_suite_name == "libero_90": max_steps = 400
-    else: raise ValueError(f"Unknown task suite: {args.task_suite_name}")
-
-    # --- SAFE VGGT LOADING (PyTorch 1.11 Compatible) ---
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    
-    # FORCE float16 because BFloat16 crashes on PyTorch 1.11 upsampling
-    dtype = torch.float16 if torch.cuda.is_available() else torch.float32
-
-    logging.info(f"Loading VGGT to CPU first...")
-    vggt_model = VGGT.from_pretrained("facebook/VGGT-1B")
-    
-    logging.info(f"Casting to {dtype} and moving to {device}...")
-    vggt_model = vggt_model.to(dtype=dtype, device=device)
-    vggt_model.eval()
-    logging.info("VGGT Model Loaded successfully.")
-    # ---------------------------------------------------
+    if args.task_suite_name == "libero_spatial":
+        max_steps = 220  # longest training demo has 193 steps
+    elif args.task_suite_name == "libero_object":
+        max_steps = 280  # longest training demo has 254 steps
+    elif args.task_suite_name == "libero_goal":
+        max_steps = 300  # longest training demo has 270 steps
+    elif args.task_suite_name == "libero_10":
+        max_steps = 520  # longest training demo has 505 steps
+    elif args.task_suite_name == "libero_90":
+        max_steps = 400  # longest training demo has 373 steps
+    else:
+        raise ValueError(f"Unknown task suite: {args.task_suite_name}")
 
     client = _websocket_client_policy.WebsocketClientPolicy(args.host, args.port)
 
+    # Start evaluation
     total_episodes, total_successes = 0, 0
     total_steps_from_success = 0
     for task_id in tqdm.tqdm(range(num_tasks_in_suite)):
+        # Get task
         task = task_suite.get_task(task_id)
+
+        # Get default LIBERO initial states
         initial_states = task_suite.get_task_init_states(task_id)
+
+        # Initialize LIBERO environment and task description
         env, task_description = _get_libero_env(task, LIBERO_ENV_RESOLUTION, args.seed)
 
+        # Start episodes
         task_episodes, task_successes = 0, 0
         steps_from_success = 0
         for episode_idx in tqdm.tqdm(range(args.num_trials_per_task)):
             logging.info(f"\nTask: {task_description}")
+
+            # Reset environment
             env.reset()
             action_plan = collections.deque()
+
+            # Set initial states
             obs = env.set_init_state(initial_states[episode_idx])
+
+            # Setup
             t = 0
             replay_images = []
 
             logging.info(f"Starting episode {task_episodes+1}...")
             while t < max_steps + args.num_steps_wait:
                 try:
+                    # IMPORTANT: Do nothing for the first few timesteps because the simulator drops objects
+                    # and we need to wait for them to fall
                     if t < args.num_steps_wait:
                         obs, reward, done, info = env.step(LIBERO_DUMMY_ACTION)
                         t += 1
                         continue
 
-                    img_raw = np.ascontiguousarray(obs["agentview_image"][::-1, ::-1])
-                    wrist_raw = np.ascontiguousarray(obs["robot0_eye_in_hand_image"][::-1, ::-1])
+                    # Get preprocessed image
+                    # IMPORTANT: rotate 180 degrees to match train preprocessing
+                    img = np.ascontiguousarray(obs["agentview_image"][::-1, ::-1])
+                    wrist_img = np.ascontiguousarray(obs["robot0_eye_in_hand_image"][::-1, ::-1])
+                    img = image_tools.convert_to_uint8(
+                        image_tools.resize_with_pad(img, args.resize_size, args.resize_size)
+                    )
+                    wrist_img = image_tools.convert_to_uint8(
+                        image_tools.resize_with_pad(wrist_img, args.resize_size, args.resize_size)
+                    )
 
-                    img = image_tools.convert_to_uint8(image_tools.resize_with_pad(img_raw, args.resize_size, args.resize_size))
-                    wrist_img = image_tools.convert_to_uint8(image_tools.resize_with_pad(wrist_raw, args.resize_size, args.resize_size))
+                    # Save preprocessed image for replay video
                     replay_images.append(img)
 
-                    # --- INFERENCE ON REPLAN ONLY ---
                     if not action_plan:
-                        # 1. Preprocess exactly like training
-                        img_tensor = preprocess_image_for_vggt(img_raw).to(device)
-                        wrist_tensor = preprocess_image_for_vggt(wrist_raw).to(device)
-                        
-                        vggt_input = torch.stack([img_tensor, wrist_tensor], dim=0).unsqueeze(0)
-                        
-                        # 2. Run Inference
-                        with torch.no_grad():
-                            with torch.cuda.amp.autocast(enabled=True, dtype=dtype):
-                                aggregated_tokens_list, ps_idx = vggt_model.aggregator(vggt_input)
-                                
-                                scene_tokens = aggregated_tokens_list[-1]
-                                pose_enc = vggt_model.camera_head(aggregated_tokens_list)[-1]
-                                depth_map, _ = vggt_model.depth_head(aggregated_tokens_list, vggt_input, ps_idx)
-                                point_map, _ = vggt_model.point_head(aggregated_tokens_list, vggt_input, ps_idx)
-                                
-                                features_array = pool_vggt_features(scene_tokens, pose_enc, depth_map, point_map)
-                        
-                        current_vggt_features = features_array[0]
-
+                        # Finished executing previous action chunk -- compute new chunk
+                        # Prepare observations dict
                         element = {
                             "observation/image": img,
                             "observation/wrist_image": wrist_img,
-                            "observation/state": obs["robot0_joint_pos"],
-                            "observation/vggt_scene_features": current_vggt_features,
+                            "observation/state": np.concatenate(
+                                (
+                                    obs["robot0_eef_pos"],
+                                    _quat2axisangle(obs["robot0_eef_quat"]),
+                                    obs["robot0_gripper_qpos"],
+                                )
+                            ),
                             "prompt": str(task_description),
                         }
-                        
+
+                        # Query model to get action
                         action_chunk = client.infer(element)["actions"]
-                        assert len(action_chunk) >= args.replan_steps
+                        assert (
+                            len(action_chunk) >= args.replan_steps
+                        ), f"We want to replan every {args.replan_steps} steps, but policy only predicts {len(action_chunk)} steps."
                         action_plan.extend(action_chunk[: args.replan_steps])
-                    # ---------------------------------
-                    
+
                     action = action_plan.popleft()
+
+                    # Execute action in environment
                     obs, reward, done, info = env.step(action.tolist())
                     t += 1
                     if done:
@@ -228,8 +161,6 @@ def eval_libero(args: Args) -> None:
 
                 except Exception as e:
                     logging.error(f"Caught exception: {e}")
-                    import traceback
-                    traceback.print_exc()
                     break
 
             task_episodes += 1
@@ -254,7 +185,7 @@ def eval_libero(args: Args) -> None:
                 logging.info(f"Average steps to success (successful episodes only): {steps_from_success / task_successes}")
         total_steps_from_success += steps_from_success
         total_successes += task_successes
-
+    
     logging.info(f"# successes: {total_successes} ({total_successes / total_episodes * 100:6f}%)")
     logging.info(f"Total episodes: {total_episodes}")
     logging.info(f"Current total success rate: {float(task_successes) / float(total_episodes)}")
@@ -262,13 +193,34 @@ def eval_libero(args: Args) -> None:
             logging.info(f"Average steps to success (successful episodes only): {total_steps_from_success / total_successes}")
 
 
+
 def _get_libero_env(task, resolution, seed):
+    """Initializes and returns the LIBERO environment, along with the task description."""
     task_description = task.language
     task_bddl_file = pathlib.Path(get_libero_path("bddl_files")) / task.problem_folder / task.bddl_file
-    env_args = {"bddl_file_name": str(task_bddl_file), "camera_heights": resolution, "camera_widths": resolution}
+    env_args = {"bddl_file_name": task_bddl_file, "camera_heights": resolution, "camera_widths": resolution}
     env = OffScreenRenderEnv(**env_args)
-    env.seed(seed)
+    env.seed(seed)  # IMPORTANT: seed seems to affect object positions even when using fixed initial state
     return env, task_description
+
+
+def _quat2axisangle(quat):
+    """
+    Copied from robosuite: https://github.com/ARISE-Initiative/robosuite/blob/eafb81f54ffc104f905ee48a16bb15f059176ad3/robosuite/utils/transform_utils.py#L490C1-L512C55
+    """
+    # clip quaternion
+    if quat[3] > 1.0:
+        quat[3] = 1.0
+    elif quat[3] < -1.0:
+        quat[3] = -1.0
+
+    den = np.sqrt(1.0 - quat[3] * quat[3])
+    if math.isclose(den, 0.0):
+        # This is (close to) a zero degree rotation, immediately return
+        return np.zeros(3)
+
+    return (quat[:3] * 2.0 * math.acos(quat[3])) / den
+
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
