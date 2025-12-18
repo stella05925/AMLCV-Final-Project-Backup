@@ -152,7 +152,7 @@ def eval_libero(args: Args) -> None:
     client = _websocket_client_policy.WebsocketClientPolicy(args.host, args.port)
 
     total_episodes, total_successes = 0, 0
-    total_steps_from_success, total_rewards_sum, total_task_successes = 0, 0, 0
+    total_steps_from_success, total_rewards_sum = 0, 0
     for task_id in tqdm.tqdm(range(num_tasks_in_suite)):
         task = task_suite.get_task(task_id)
         initial_states = task_suite.get_task_init_states(task_id)
@@ -221,12 +221,13 @@ def eval_libero(args: Args) -> None:
                     action = action_plan.popleft()
                     obs, reward, done, info = env.step(action.tolist())
                     rewards_sum += reward
+                    if reward > 0:
+                        logging.info(f"Positive reward received: {reward} at step {t}")
+                    t += 1
                     if done:
                         task_successes += 1
-                        total_successes += 1
-                        steps_from_success += t
+                        steps_from_success +=1 
                         break
-                    t += 1
 
                 except Exception as e:
                     logging.error(f"Caught exception: {e}")
@@ -245,26 +246,27 @@ def eval_libero(args: Args) -> None:
                 [np.asarray(x) for x in replay_images],
                 fps=10,
             )
-
             # Log current results
             logging.info(f"Success: {done}")
-            logging.info(f"# episodes completed so far: {total_episodes}")
-            logging.info(f"# successes: {total_successes} ({total_successes / total_episodes * 100:.3f}%)")
-            logging.info(f"Average of rewards of given by libero: {rewards_sum/total_episodes:.4f}")
+            logging.info(f"# Episodes completed so far: {task_episodes}")
+            if done:
+                logging.info(f"Steps to success in this episode: {t}")
         # Log final results
-        logging.info(f"Current task success rate: {float(task_successes) / float(task_episodes)}")
-        logging.info(f"Current total success rate: {float(task_successes) / float(total_episodes)}")
+        logging.info(f"# Successes for this task: {task_successes} ({task_successes / task_episodes * 100:6f}%)")
+        logging.info(f"Average of rewards of given by libero: {rewards_sum/task_episodes:.4f}")
+        logging.info(f"Sum of rewards given by libero over episodes: {rewards_sum:.4f}")
         if task_successes > 0:
                 logging.info(f"Average steps to success (successful episodes only): {steps_from_success / task_successes}")
         total_rewards_sum += rewards_sum
         total_steps_from_success += steps_from_success
-        total_task_successes += task_successes
-    logging.info(f"Total success rate: {float(total_successes) / float(total_episodes)}")
+        total_successes += task_successes
+
+    logging.info(f"# successes: {total_successes} ({total_successes / total_episodes * 100:6f}%)")
     logging.info(f"Average of total rewards of given by libero: {total_rewards_sum/total_episodes:.4f}")
     logging.info(f"Total episodes: {total_episodes}")
     logging.info(f"Current total success rate: {float(task_successes) / float(total_episodes)}")
-    if total_task_successes > 0:
-            logging.info(f"Average steps to success (successful episodes only): {total_steps_from_success / total_task_successes}")
+    if total_successes > 0:
+            logging.info(f"Average steps to success (successful episodes only): {total_steps_from_success / total_successes}")
 
 
 def _get_libero_env(task, resolution, seed):
