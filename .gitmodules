@@ -1,3 +1,6 @@
 [submodule "openpi/openpi/third_party/libero_plus"]
 	path = openpi/openpi/third_party/libero_plus
 	url = git@github.com:sylvestf/LIBERO-plus.git
+[submodule "openpi/third_party/libero_plus"]
+	path = openpi/third_party/libero_plus
+	url = https://github.com/LifanShao/LIBERO
