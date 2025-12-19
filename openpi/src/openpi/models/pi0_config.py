@@ -108,15 +108,31 @@ class Pi0Config(_model.BaseModelConfig):
             return nnx.Nothing
         return nnx.All(*filters)
 
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class Pi0WithVGGTConfig(Pi0Config):
     """Configuration for π₀ model augmented with VGGT features."""
     
     # VGGT-specific parameters
     use_vggt_features: bool = True
-    vggt_feature_dim: int = 2065  # Your actual feature dimension
-    vggt_lora_rank: int = 16
-    use_vggt_gating: bool = True
+    vggt_feature_dim: int = 2048  # Dimension of VGGT latent features
+    vggt_compressed_dim: int | None = 512  # Set to None to disable compression
+    vggt_lora_rank: int = 16  # LoRA rank for VGGT fusion
+    use_vggt_gating: bool = True  # Use learned gating mechanism
+    
+    def __post_init__(self):
+        """Validate configuration."""
+        # Call parent's __post_init__ if it exists
+        if hasattr(super(), '__post_init__'):
+            super().__post_init__()
+        
+        # Validate VGGT config
+        if self.use_vggt_features:
+            assert self.vggt_feature_dim > 0, "vggt_feature_dim must be positive"
+            assert self.vggt_lora_rank > 0, "vggt_lora_rank must be positive"
+            if self.vggt_compressed_dim is not None:
+                assert self.vggt_compressed_dim > 0, "vggt_compressed_dim must be positive"
+                assert self.vggt_compressed_dim < self.vggt_feature_dim, \
+                    f"Compression dim ({self.vggt_compressed_dim}) should be < feature dim ({self.vggt_feature_dim})"
     
     @override
     @property
@@ -137,28 +153,40 @@ class Pi0WithVGGTConfig(Pi0Config):
         Get freeze filter for LoRA + VGGT training.
         
         Returns a filter that FREEZES everything EXCEPT:
-        - LoRA parameters in PaliGemma and ActionExpert
-        - VGGT LoRA parameters (vggt_lora_down, vggt_lora_up)
-        - VGGT gate parameters
+        - LoRA parameters in PaliGemma and ActionExpert (from base Pi0Config)
+        - VGGT-specific parameters:
+            * vggt_lora_down, vggt_lora_up (LoRA adapters)
+            * vggt_gate (optional gating mechanism)
+            * latent_compressor (optional compression layer)
+        
+        Returns:
+            Filter that returns True for parameters to FREEZE
         """
         # Get the base LoRA freeze filter from parent class
-        base_lora_filter = super().get_freeze_filter()
+        base_freeze_filter = super().get_freeze_filter()
         
-        # Create VGGT-specific filter (don't freeze VGGT params)
-        def vggt_trainable(path, value):
+        # Create VGGT-specific trainable filter
+        def is_vggt_trainable(path, value):
             """Returns True if this is a VGGT parameter that should be trained."""
             path_str = "/".join(str(p) for p in path)
             return any([
                 "vggt_lora_down" in path_str,
                 "vggt_lora_up" in path_str,
                 "vggt_gate" in path_str,
+                "latent_compressor" in path_str,  # Add compression layer
             ])
         
-        # Combine: freeze everything EXCEPT (base LoRA params OR VGGT params)
-        # nnx.Not(base_lora_filter) = trainable LoRA params
-        # vggt_trainable = trainable VGGT params
-        # nnx.Any = train if either condition is true
-        trainable = nnx.Any(nnx.Not(base_lora_filter), vggt_trainable)
+        # Combine filters:
+        # - base_freeze_filter returns True for params to FREEZE
+        # - nnx.Not(base_freeze_filter) returns True for params to TRAIN (base LoRA)
+        # - is_vggt_trainable returns True for VGGT params to TRAIN
+        # - nnx.Any(...) returns True if EITHER should be trained
+        # - nnx.Not(nnx.Any(...)) returns True for params to FREEZE
+        
+        trainable_filter = nnx.Any(
+            nnx.Not(base_freeze_filter),  # Base LoRA params (trainable)
+            is_vggt_trainable             # VGGT params (trainable)
+        )
         
         # Return the freeze filter (inverse of trainable)
-        return nnx.Not(trainable)
+        return nnx.Not(trainable_filter)

@@ -40,6 +40,111 @@ def preprocess_image_for_vggt(image_array, target_size=224):
     return image
 
 
+# def extract_vggt_features_from_episode(
+#     model, 
+#     demo_group,
+#     keyframe_indices, 
+#     device, 
+#     dtype,
+#     target_size=224
+# ):
+#     """
+#     Extract VGGT scene features from an episode using keyframes.
+    
+#     Args:
+#         model: VGGT model
+#         demo_group: HDF5 group for a demo
+#         keyframe_indices: Indices of keyframes to use
+#         device: torch device
+#         dtype: torch dtype
+#         target_size: Target image size for VGGT
+    
+#     Returns:
+#         np.ndarray: Pooled VGGT features
+#     """
+#     # Collect images from keyframes
+#     keyframe_images = []
+    
+#     for idx in keyframe_indices:
+#         # Load from HDF5: obs/agentview_rgb and obs/eye_in_hand_rgb
+#         agentview_img = demo_group['obs']['agentview_rgb'][idx]  # [128, 128, 3]
+#         wrist_img = demo_group['obs']['eye_in_hand_rgb'][idx]    # [128, 128, 3]
+        
+#         # Preprocess for VGGT (resize to 224x224)
+#         agentview_tensor = preprocess_image_for_vggt(agentview_img, target_size)
+#         wrist_tensor = preprocess_image_for_vggt(wrist_img, target_size)
+        
+#         keyframe_images.append(agentview_tensor)
+#         keyframe_images.append(wrist_tensor)
+    
+#     # Stack images: [S, 3, 224, 224] where S = num_keyframes * 2 cameras
+#     images = torch.stack(keyframe_images).to(device)
+    
+#     # Add batch dimension: [1, S, 3, 224, 224]
+#     images = images.unsqueeze(0)
+    
+#     # Run VGGT
+#     with torch.no_grad():
+#         with torch.cuda.amp.autocast(dtype=dtype):
+#             # Get internal features from aggregator
+#             aggregated_tokens_list, ps_idx = model.aggregator(images)
+            
+#             # Extract features
+#             scene_tokens = aggregated_tokens_list[-1]  # [B, S, num_tokens, embed_dim]
+#             pose_enc = model.camera_head(aggregated_tokens_list)[-1]  # [B, S, 9]
+#             depth_map, depth_conf = model.depth_head(aggregated_tokens_list, images, ps_idx)
+#             point_map, point_conf = model.point_head(aggregated_tokens_list, images, ps_idx)
+    
+#     # Pool features to fixed-size vector
+#     features = pool_vggt_features(
+#         scene_tokens=scene_tokens,
+#         pose_enc=pose_enc,
+#         depth_map=depth_map,
+#         point_map=point_map,
+#     )
+    
+#     return features
+
+
+# def pool_vggt_features(scene_tokens, pose_enc, depth_map, point_map):
+#     """
+#     Pool VGGT outputs to a fixed-size feature vector.
+    
+#     Args:
+#         scene_tokens: [B, S, num_tokens, embed_dim] - internal features
+#         pose_enc: [B, S, 9] - camera parameters
+#         depth_map: [B, S, H, W, 1] - depth predictions
+#         point_map: [B, S, H, W, 3] - 3D point predictions
+    
+#     Returns:
+#         np.ndarray: [B, feature_dim] - pooled scene features
+#     """
+#     # 1. Pool scene tokens (most informative)
+#     tokens_pooled = scene_tokens.mean(dim=[1, 2])  # [B, embed_dim=1024]
+    
+#     # 2. Pool camera parameters
+#     pose_pooled = pose_enc.mean(dim=1)  # [B, 9]
+    
+#     # 3. Pool depth statistics
+#     depth_mean = depth_map.mean(dim=[1, 2, 3])  # [B, 1]
+#     depth_std = depth_map.std(dim=[1, 2, 3])    # [B, 1]
+#     depth_features = torch.cat([depth_mean, depth_std], dim=-1)  # [B, 2]
+    
+#     # 4. Pool point map statistics
+#     point_mean = point_map.mean(dim=[1, 2, 3])  # [B, 3]
+#     point_std = point_map.std(dim=[1, 2, 3])    # [B, 3]
+#     point_features = torch.cat([point_mean, point_std], dim=-1)  # [B, 6]
+    
+#     # Concatenate all features
+#     all_features = torch.cat([
+#         tokens_pooled,     # [B, 1024]
+#         pose_pooled,       # [B, 9]
+#         depth_features,    # [B, 2]
+#         point_features,    # [B, 6]
+#     ], dim=-1)  # [B, 1041]
+    
+#     return all_features.cpu().numpy()
+
 def extract_vggt_features_from_episode(
     model, 
     demo_group,
@@ -49,7 +154,7 @@ def extract_vggt_features_from_episode(
     target_size=224
 ):
     """
-    Extract VGGT scene features from an episode using keyframes.
+    Extract VGGT latent features from an episode using keyframes.
     
     Args:
         model: VGGT model
@@ -60,91 +165,56 @@ def extract_vggt_features_from_episode(
         target_size: Target image size for VGGT
     
     Returns:
-        np.ndarray: Pooled VGGT features
+        np.ndarray: Pooled VGGT latent features
     """
-    # Collect images from keyframes
+    # Collect images from keyframes (same as before)
     keyframe_images = []
     
     for idx in keyframe_indices:
-        # Load from HDF5: obs/agentview_rgb and obs/eye_in_hand_rgb
-        agentview_img = demo_group['obs']['agentview_rgb'][idx]  # [128, 128, 3]
-        wrist_img = demo_group['obs']['eye_in_hand_rgb'][idx]    # [128, 128, 3]
+        agentview_img = demo_group['obs']['agentview_rgb'][idx]
+        wrist_img = demo_group['obs']['eye_in_hand_rgb'][idx]
         
-        # Preprocess for VGGT (resize to 224x224)
         agentview_tensor = preprocess_image_for_vggt(agentview_img, target_size)
         wrist_tensor = preprocess_image_for_vggt(wrist_img, target_size)
         
         keyframe_images.append(agentview_tensor)
         keyframe_images.append(wrist_tensor)
     
-    # Stack images: [S, 3, 224, 224] where S = num_keyframes * 2 cameras
     images = torch.stack(keyframe_images).to(device)
+    images = images.unsqueeze(0)  # [1, S, 3, 224, 224]
     
-    # Add batch dimension: [1, S, 3, 224, 224]
-    images = images.unsqueeze(0)
-    
-    # Run VGGT
+    # Run VGGT aggregator only
     with torch.no_grad():
         with torch.cuda.amp.autocast(dtype=dtype):
-            # Get internal features from aggregator
-            aggregated_tokens_list, ps_idx = model.aggregator(images)
+            # Get latent representations from aggregator
+            aggregated_tokens_list, patch_start_idx = model.aggregator(images)
             
-            # Extract features
-            scene_tokens = aggregated_tokens_list[-1]  # [B, S, num_tokens, embed_dim]
-            pose_enc = model.camera_head(aggregated_tokens_list)[-1]  # [B, S, 9]
-            depth_map, depth_conf = model.depth_head(aggregated_tokens_list, images, ps_idx)
-            point_map, point_conf = model.point_head(aggregated_tokens_list, images, ps_idx)
+            # Use the final iteration's tokens (most refined)
+            final_tokens = aggregated_tokens_list[-1]  # [B, S, num_tokens, embed_dim]
     
-    # Pool features to fixed-size vector
-    features = pool_vggt_features(
-        scene_tokens=scene_tokens,
-        pose_enc=pose_enc,
-        depth_map=depth_map,
-        point_map=point_map,
-    )
+    # Pool latent features to fixed-size vector
+    features = pool_latent_features(final_tokens)
     
     return features
 
 
-def pool_vggt_features(scene_tokens, pose_enc, depth_map, point_map):
+def pool_latent_features(tokens):
     """
-    Pool VGGT outputs to a fixed-size feature vector.
+    Pool VGGT latent tokens to a fixed-size feature vector.
     
     Args:
-        scene_tokens: [B, S, num_tokens, embed_dim] - internal features
-        pose_enc: [B, S, 9] - camera parameters
-        depth_map: [B, S, H, W, 1] - depth predictions
-        point_map: [B, S, H, W, 3] - 3D point predictions
+        tokens: [B, S, num_tokens, embed_dim] - latent representations
+                where embed_dim = 2048 for VGGT-1B
     
     Returns:
-        np.ndarray: [B, feature_dim] - pooled scene features
+        np.ndarray: [B, feature_dim] - pooled latent features
     """
-    # 1. Pool scene tokens (most informative)
-    tokens_pooled = scene_tokens.mean(dim=[1, 2])  # [B, embed_dim=1024]
+    B, S, N, D = tokens.shape
     
-    # 2. Pool camera parameters
-    pose_pooled = pose_enc.mean(dim=1)  # [B, 9]
+    # Global average pooling across sequence and tokens
+    global_pool = tokens.mean(dim=[1, 2])  # [B, 2048]
     
-    # 3. Pool depth statistics
-    depth_mean = depth_map.mean(dim=[1, 2, 3])  # [B, 1]
-    depth_std = depth_map.std(dim=[1, 2, 3])    # [B, 1]
-    depth_features = torch.cat([depth_mean, depth_std], dim=-1)  # [B, 2]
-    
-    # 4. Pool point map statistics
-    point_mean = point_map.mean(dim=[1, 2, 3])  # [B, 3]
-    point_std = point_map.std(dim=[1, 2, 3])    # [B, 3]
-    point_features = torch.cat([point_mean, point_std], dim=-1)  # [B, 6]
-    
-    # Concatenate all features
-    all_features = torch.cat([
-        tokens_pooled,     # [B, 1024]
-        pose_pooled,       # [B, 9]
-        depth_features,    # [B, 2]
-        point_features,    # [B, 6]
-    ], dim=-1)  # [B, 1041]
-    
-    return all_features.cpu().numpy()
-
+    return global_pool.cpu().numpy()  # [B, 2048]
 
 def process_libero_dataset(
     dataset_path: str,
