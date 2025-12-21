@@ -132,13 +132,7 @@ def eval_libero(args: Args) -> None:
                         element = {
                             "observation/image": img,
                             "observation/wrist_image": wrist_img,
-                            "observation/state": np.concatenate(
-                                (
-                                    obs["robot0_eef_pos"],
-                                    _quat2axisangle(obs["robot0_eef_quat"]),
-                                    obs["robot0_gripper_qpos"],
-                                )
-                            ),
+                            "observation/state": obs["robot0_joint_pos"],  # 7D joint angles,
                             "prompt": str(task_description),
                         }
 
