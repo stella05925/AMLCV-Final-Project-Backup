@@ -1,6 +1,12 @@
 ### 1. Install
 Please follow the installation instructions in the README of each of the repos (LIBERO, openpi, vggt)
 
+Download LIBERO-Spatial Dataset locally:
+```bash
+python benchmark_scripts/download_libero_datasets.py --datasets DATASET
+# where DATASET is chosen from [libero_spatial, libero_object, libero_100, libero_goal]
+```
+
 ### 2. Precompute 3D Scene features
 
 ```bash
