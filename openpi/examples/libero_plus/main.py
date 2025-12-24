@@ -150,7 +150,7 @@ def eval_libero(args: Args) -> None:
                     t += 1
                     if done:
                         task_successes += 1
-                        steps_from_success +=1 
+                        steps_from_success +=t 
                         break
 
                 except Exception as e:
