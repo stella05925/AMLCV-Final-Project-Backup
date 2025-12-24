@@ -5,8 +5,152 @@ from libero.libero.envs.objects import *
 from libero.libero.envs.predicates import *
 from libero.libero.envs.regions import *
 from libero.libero.envs.utils import rectangle2xyrange
+from scipy.spatial.transform import Rotation
 
+def scale_distance_from_pivot(original_quat=None, original_pos=None, scale_factor=1.3):
+    """
+    计算位置点到 (0, 0, 0.8) 的距离并按比例缩放，保持四元数不变
+    
+    参数:
+        original_quat: 原始四元数 [w, x, y, z] (可选)
+        original_pos: 原始位置 [x, y, z] (可选)
+        scale_factor: 距离缩放因子 (默认1.5)
+        
+    返回:
+        字典包含:
+        - 'new_quat': 原始四元数 [w, x, y, z] (如果输入了original_quat)
+        - 'new_pos': 缩放后的位置 [x, y, z] (如果输入了original_pos)
+    """
+    result = {}
+    
+    # 定义轴点
+    pivot_point = np.array([0, 0, 0.8])
+    
+    # 处理四元数（保持不变）
+    if original_quat is not None:
+        result['new_quat'] = original_quat
+    
+    # 处理位置点缩放
+    if original_pos is not None:
+        original_pos = np.array(original_pos)
+        # 计算从轴点到原始位置的向量
+        vec_to_point = original_pos - pivot_point
+        # 缩放这个向量
+        scaled_vec = vec_to_point * scale_factor
+        # 计算新位置
+        new_pos = pivot_point + scaled_vec
+        result['new_pos'] = new_pos.tolist() if isinstance(new_pos, np.ndarray) else new_pos
+    
+    return result
 
+def rotate_around_y(original_quat=None, original_pos=None, degrees=0):
+    """
+    计算四元数和/或3D位置点绕自定义轴 (x=0, z=0.8) 的平行于Y轴的轴旋转指定角度后的新值
+    
+    参数:
+        original_quat: 原始四元数 [w, x, y, z] (可选)
+        original_pos: 原始位置 [x, y, z] (可选)
+        degrees: 旋转角度（度数），正值为从X轴向Z轴旋转方向
+        
+    返回:
+        字典包含:
+        - 'new_quat': 旋转后的四元数 [w, x, y, z] (如果输入了original_quat)
+        - 'new_pos': 旋转后的位置 [x, y, z] (如果输入了original_pos)
+    """
+    result = {}
+    
+    # 定义旋转轴 (x=0, z=0.8) 的平行于Y轴的向量
+    axis = np.array([0, 1, 0])  # 方向与Y轴相同
+    axis_point = np.array([0, 0, 0.8])  # 轴经过的点
+    
+    # 创建绕自定义轴的旋转
+    custom_rotation = Rotation.from_rotvec(np.radians(-degrees) * axis)
+    
+    # 处理四元数旋转
+    if original_quat is not None:
+        original_rot = Rotation.from_quat([original_quat[1], original_quat[2], original_quat[3], original_quat[0]])
+        combined_rot = custom_rotation * original_rot
+        new_quat = combined_rot.as_quat()
+        result['new_quat'] = [float(new_quat[3]), float(new_quat[0]), float(new_quat[1]), float(new_quat[2])]
+    
+    # 处理位置点旋转
+    if original_pos is not None:
+        # 对于点旋转，需要先平移到旋转轴，旋转后再平移回来
+        translated_pos = np.array(original_pos) - axis_point
+        rotated_pos = custom_rotation.apply(translated_pos)
+        final_pos = rotated_pos + axis_point
+        result['new_pos'] = final_pos.tolist() if isinstance(final_pos, np.ndarray) else final_pos
+    
+    return result
+
+def rotate_around_x(original_quat=None, original_pos=None, degrees=0):
+    """
+    计算四元数和/或3D位置点绕X轴旋转指定角度后的新值
+    
+    参数:
+        original_quat: 原始四元数 [w, x, y, z] (可选)
+        original_pos: 原始位置 [x, y, z] (可选)
+        degrees: 旋转角度（度数），正值为逆时针方向
+        
+    返回:
+        字典包含:
+        - 'new_quat': 旋转后的四元数 [w, x, y, z] (如果输入了original_quat)
+        - 'new_pos': 旋转后的位置 [x, y, z] (如果输入了original_pos)
+    """
+    result = {}
+    
+    # 创建X轴旋转
+    x_rotation = Rotation.from_euler('x', degrees, degrees=True)
+    
+    # 处理四元数旋转
+    if original_quat is not None:
+        original_rot = Rotation.from_quat([original_quat[1], original_quat[2], original_quat[3], original_quat[0]])
+        combined_rot = x_rotation * original_rot
+        new_quat = combined_rot.as_quat()
+        result['new_quat'] = [float(new_quat[3]), float(new_quat[0]), float(new_quat[1]), float(new_quat[2])]
+    
+    # 处理位置点旋转
+    if original_pos is not None:
+        # 将位置转换为齐次坐标并应用旋转
+        rotated_pos = x_rotation.apply(original_pos)
+        result['new_pos'] = rotated_pos.tolist() if isinstance(rotated_pos, np.ndarray) else rotated_pos
+    
+    return result
+
+def rotate_around_z(original_quat=None, original_pos=None, degrees=0):
+    """
+    计算四元数和/或3D位置点绕Z轴旋转指定角度后的新值
+    
+    参数:
+        original_quat: 原始四元数 [w, x, y, z] (可选)
+        original_pos: 原始位置 [x, y, z] (可选)
+        degrees: 旋转角度（度数），正值为逆时针方向
+        
+    返回:
+        字典包含:
+        - 'new_quat': 旋转后的四元数 [w, x, y, z] (如果输入了original_quat)
+        - 'new_pos': 旋转后的位置 [x, y, z] (如果输入了original_pos)
+    """
+    result = {}
+    
+    # 创建Z轴旋转
+    z_rotation = Rotation.from_euler('z', degrees, degrees=True)
+    
+    # 处理四元数旋转
+    if original_quat is not None:
+        original_rot = Rotation.from_quat([original_quat[1], original_quat[2], original_quat[3], original_quat[0]])
+        combined_rot = z_rotation * original_rot
+        new_quat = combined_rot.as_quat()
+        # result['new_quat'] = [new_quat[3], new_quat[0], new_quat[1], new_quat[2]]
+        result['new_quat'] = [float(new_quat[3]), float(new_quat[0]), float(new_quat[1]), float(new_quat[2])]
+    
+    # 处理位置点旋转
+    if original_pos is not None:
+        # 将位置转换为齐次坐标并应用旋转
+        rotated_pos = z_rotation.apply(original_pos)
+        result['new_pos'] = rotated_pos.tolist() if isinstance(rotated_pos, np.ndarray) else rotated_pos
+    
+    return result
 @register_problem
 class Libero_Tabletop_Manipulation(BDDLBaseDomain):
     def __init__(self, bddl_file_name, *args, **kwargs):
@@ -185,15 +329,22 @@ class Libero_Tabletop_Manipulation(BDDLBaseDomain):
                     )
 
     def _setup_camera(self, mujoco_arena):
-        mujoco_arena.set_camera(
-            camera_name="agentview",
-            pos=[0.6586131746834771, 0.0, 1.6103500240372423],
-            quat=[
+
+        quat_up = [
                 0.6380177736282349,
                 0.3048497438430786,
                 0.30484986305236816,
                 0.6380177736282349,
-            ],
+            ]
+        
+        pos_up = [0.6586131746834771, 0.0, 1.6103500240372423]
+        # result_view = rotate_around_z(original_quat=quat_up, original_pos=pos_up, degrees=30)
+        # pos_view = [round(x,4) for x in result_view['new_pos']]
+        # quat_view = [round(x,4) for x in result_view['new_quat']]
+        mujoco_arena.set_camera(
+            camera_name="agentview",
+            pos=pos_up,
+            quat=quat_up,
         )
 
         # For visualization purpose

@@ -212,7 +212,7 @@ def eval_libero(args: Args) -> None:
                             "observation/vggt_scene_features": current_vggt_features,
                             "prompt": str(task_description),
                         }
-                        
+                        logging.info (f"RAFAL: Running inference with VGGT features shape: {current_vggt_features.shape}")
                         action_chunk = client.infer(element)["actions"]
                         assert len(action_chunk) >= args.replan_steps
                         action_plan.extend(action_chunk[: args.replan_steps])
@@ -223,7 +223,7 @@ def eval_libero(args: Args) -> None:
                     t += 1
                     if done:
                         task_successes += 1
-                        steps_from_success +=1 
+                        steps_from_success +=t 
                         break
 
                 except Exception as e:
