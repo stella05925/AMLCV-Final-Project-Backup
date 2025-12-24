@@ -781,7 +781,7 @@ _CONFIGS = [
         
         data=LeRobotLiberoLocalDataConfig(
             repo_id="Lifelong-Robot-Learning/LIBERO",
-            local_dataset_path="/home/stella/projects/LIBERO/libero/datasets/libero_spatial",  # Original without VGGT
+            local_dataset_path="/home/stella/AMLCV-Final-Project-Backup/LIBERO/libero/datasets/libero_spatial",  # Original without VGGT
             extra_delta_transform=True,
         ),
         
@@ -1047,7 +1047,7 @@ _CONFIGS = [
         
         data=LeRobotLiberoVGGTDataConfig(
             repo_id="Lifelong-Robot-Learning/LIBERO",
-            vggt_dataset_path="/home/stella/projects/vggt/libero/datasets_with_vggt/libero_spatial/",
+            vggt_dataset_path="/home/stella/AMLCV-Final-Project-Backup/vggt/libero/datasets_with_vggt/libero_spatial/",
             extra_delta_transform=True,
         ),
         
@@ -1059,6 +1059,22 @@ _CONFIGS = [
             paligemma_variant="gemma_2b_lora",
             action_expert_variant="gemma_300m_lora",
         ).get_freeze_filter(),
+
+        optimizer=_optimizer.AdamW(
+        b1=0.9,
+        b2=0.999,        # ← Higher (was 0.95) - better for noisy gradients
+        eps=1e-8,
+        weight_decay=1e-10,
+        clip_gradient_norm=2.0,  # ← Less aggressive (was 1.0)
+    ),
+    
+        # TUNED: Adjusted learning rate schedule
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_500,      # ← Longer warmup (was 1000)
+            peak_lr=5e-5,            # ← 2x higher (was 2.5e-5)
+            decay_steps=30_000,
+            decay_lr=1e-6,           # ← Lower end (was 2.5e-6)
+        ),
         
         num_train_steps=30_000,
         batch_size=32,

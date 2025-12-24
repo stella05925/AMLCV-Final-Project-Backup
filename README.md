@@ -25,5 +25,16 @@ uv run openpi/scripts/train.py pi0_libero_low_mem_finetune --exp-name=baseline -
 uv run scripts/train.py pi0_libero_vggt --exp-name=pi0_vggt --num-train-steps=5000 --batch-size=2 --log-interval=100 --overwrite
 ```
 
+### 5. Evaluate with LIBERO (with docker)
+
+```bash
+export SERVER_ARGS="--env LIBERO policy:checkpoint --policy.config pi0_libero_vggt --policy.dir ./checkpoints"
+export CLIENT_ARGS="--args.task-suite-name libero_spatial"
+docker compose -f ./examples/libero/compose.yml up
+```
+note: to evaluate baseline model set --policy.config to pi0_libero_low_mem_finetune
+
+
 ### Model Checkpoints
-https://huggingface.co/stellaaaa/Pi0_vggt_libero_spatial_5k/tree/main
+- vggt features: https://huggingface.co/stellaaaa/Pi0_vggt_libero_spatial_5k/tree/main
+- vggt latents: https://huggingface.co/stellaaaa/Pi0_vggt_libero_spatial_latents/tree/main 
