@@ -114,9 +114,19 @@ def main(args: Args) -> None:
         port=args.port,
         metadata=policy_metadata,
     )
-    server.serve_forever()
+    
+    try:
+        logging.info("Starting server on port %d", args.port)
+        server.serve_forever()
+    except Exception as e:
+        logging.error("Server error: %s", e, exc_info=True)
+        raise
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, force=True)
-    main(tyro.cli(Args))
+    try:
+        main(tyro.cli(Args))
+    except Exception as e:
+        logging.error("Fatal error: %s", e, exc_info=True)
+        raise

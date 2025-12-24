@@ -33,7 +33,7 @@ services:
   openpi_server:
     image: openpi_server
     ports:
-      - "8001:8000"
+      - "8002:8000"
     build:
       context: ../..
       dockerfile: scripts/docker/serve_policy.Dockerfile

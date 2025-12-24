@@ -127,7 +127,7 @@ def eval_libero(args: Args) -> None:
     logging.info(f"Task suite: {args.task_suite_name}")
     pathlib.Path(args.video_out_path).mkdir(parents=True, exist_ok=True)
 
-    if args.task_suite_name == "libero_spatial": max_steps = 220
+    if args.task_suite_name == "libero_spatial": max_steps = 50
     elif args.task_suite_name == "libero_object": max_steps = 280
     elif args.task_suite_name == "libero_goal": max_steps = 300
     elif args.task_suite_name == "libero_10": max_steps = 520
@@ -223,7 +223,7 @@ def eval_libero(args: Args) -> None:
                     t += 1
                     if done:
                         task_successes += 1
-                        steps_from_success +=1 
+                        steps_from_success +=t 
                         break
 
                 except Exception as e:
